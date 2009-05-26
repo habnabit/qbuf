@@ -16,7 +16,7 @@ Initialize a new buffer. If the delimiter is provided, it can be\n\
 used to pop lines off instead of just bytes.\n\
 \n\
 Iterating over a BufferQueue is the same as repeatedly calling\n\
-.popline() on it.\n\
+.popline() on it. An empty BufferQueue evaluates to boolean False.\n\
 ");
 
 typedef struct {
@@ -610,7 +610,7 @@ static PyTypeObject BufferQueueType = {
     (newfunc)BufferQueue_new,   /* tp_new */
 };
 
-static PyMethodDef ringbuf_methods[] = {
+static PyMethodDef qbuf_methods[] = {
     {NULL}  /* Sentinel */
 };
 
@@ -626,7 +626,7 @@ init_qbuf(void)
     if (PyType_Ready(&BufferQueueType) < 0)
         return;
 
-    m = Py_InitModule3("_qbuf", ringbuf_methods,
+    m = Py_InitModule3("_qbuf", qbuf_methods,
         "C implementations of things in the qbuf package.");
 
     Py_INCREF(&BufferQueueType);
