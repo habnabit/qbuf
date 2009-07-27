@@ -21,7 +21,8 @@ class MultiBufferer(protocol.Protocol):
     the data that comes in.
     
     When the buffering mode is MODE_DELIMITED, lineReceived is called with 
-    each complete line without the delimiter on the end.
+    each complete line without the delimiter on the end. The 'delimiter' 
+    instance attribute is used for keeping track of the current delimiter.
     
     When the buffering mode is MODE_STATEFUL, a user-passed function is 
     called for every so many bytes received. If self.current_state is None,
@@ -30,7 +31,7 @@ class MultiBufferer(protocol.Protocol):
     """
     mode = MODE_RAW
     initial_delimiter = '\r\n'
-    current_state = _generator = None
+    current_state = _generator = _generator_state = None
     
     def __init__(self):
         self._buffer = BufferQueue(self.initial_delimiter)
@@ -39,47 +40,78 @@ class MultiBufferer(protocol.Protocol):
         self._buffer.push(data)
         while self._buffer:
             if self.mode == MODE_RAW:
-                self.rawDataReceived(self._buffer.pop())
+                self._rawDataReceived(self._buffer.pop())
             elif self.mode == MODE_DELIMITED:
                 try:
                     line = self._buffer.popline()
                 except ValueError:
                     break
                 else:
-                    self.lineReceived(line)
+                    self._lineReceived(line)
             elif self.mode == MODE_STATEFUL:
-                if self.current_state is None:
-                    self.current_state = self.getInitialState()
-                try:
-                    chunk = self._buffer.pop(self.current_state[1])
-                except BufferUnderflow:
-                    break
+                if self._generator:
+                    try:
+                        chunk = self._buffer.pop(self._generator_state)
+                    except BufferUnderflow:
+                        break
+                    else:
+                        self._updateGenerator(chunk)
                 else:
-                    result = self.current_state[0](chunk)
-                    if result:
-                        self.current_state = result
+                    if self.current_state is None:
+                        self.current_state = self.getInitialState()
+                    try:
+                        chunk = self._buffer.pop(self.current_state[1])
+                    except BufferUnderflow:
+                        break
+                    else:
+                        result = self.current_state[0](chunk)
+                        if result:
+                            self.current_state = result
     
-    def setMode(self, mode, extra='', flush=False, state=None):
+    def setMode(self, mode, extra='', flush=False, state=None, delimiter=None):
         """Change the buffering mode. 
         
         If 'extra' is provided, add that to the buffer. If 'flush' is True and 
         'extra' is provided, also flush the buffer as much as possible. If 
-        'state' is not None, assigns that value to self.current_state before 
-        anything else.
+        'state' is not None, that value will be assigned to self.current_state 
+        before anything else. If 'delimiter' is not None, the delimiter will
+        be set before anything else.
         """
         self.mode = mode
         if state is not None:
             self.current_state = state
+        if delimiter is not None:
+            self.delimiter = delimiter
         if extra and flush:
             self.dataReceived(extra)
         elif extra:
             self._buffer.push(extra)
+    
+    def _get_delimiter(self):
+        return self._buffer.delimiter
+    
+    def _set_delimiter(self, delimiter):
+        self._buffer.delimiter = delimiter
+    
+    delimiter = property(_get_delimiter, _set_delimiter)
+    
+    def _rawDataReceived(self, data):
+        if self._generator:
+            self._updateGenerator(data)
+        else:
+            self.rawDataReceived(data)
     
     def rawDataReceived(self, data):
         """Called when the buffering mode is MODE_RAW and there is new data 
         available.
         """
         raise NotImplementedError
+    
+    def _lineReceived(self, line):
+        if self._generator:
+            self._updateGenerator(data)
+        else:
+            self.lineReceived(data)
     
     def lineReceived(self, line):
         """Called when the buffering mode is MODE_DELIMITED and there is a new 
@@ -98,29 +130,42 @@ class MultiBufferer(protocol.Protocol):
         """
         raise NotImplementedError
     
-    def startGenerator(self, gen):
-        """Use a generator in place of MODE_STATEFUL callbacks.
+    def startGenerator(self, gen, mode=None):
+        """Use a generator in place of callbacks.
         
-        A convenience function for use with MODE_STATEFUL. A generator passed
-        to this method should yield the number of bytes to read, and then will
-        be sent those bytes when they become available.
+        A convenience function for use with any buffering mode. A generator 
+        passed to this method will receive data as it comes in. In MODE_RAW
+        and MODE_DELIMITED, the value yielded by the generator must be None. 
+        In MODE_STATEFUL, the generator must yield the number of bytes to be 
+        sent.
         
         The generator must change the MultiBufferer's state when it is done
         yielding values and before it returns; any StopIteration exceptions 
         are ignored. Otherwise, the MultiBufferer would overwrite the state 
-        set by the generator.
+        set by the generator. Calling startGenerator from a started generator
+        will overwrite the previous generator but otherwise function as 
+        expected.
+        
+        If 'mode' is passed, the buffering mode is changed before the 
+        generator starts.
         """
         self._generator = gen
-        size = gen.next()
-        self.setMode(MODE_STATEFUL, state=(self._updateGenerator, size))
+        if mode is not None:
+            self.setMode(mode)
+        # Since g.next() is the same as g.send(None), let's not duplicate the
+        # setting of self._generator_state and catching the StopIteration.
+        self._updateGenerator(None)
     
     def _updateGenerator(self, data):
+        # Someone might call startGenerator from within a started generator,
+        # so make sure that if we unset the generator, we're unsetting the 
+        # generator that raised the StopIteration.
+        g = self._generator
         try:
-            size = self._generator.send(data)
+            self._generator_state = g.send(data)
         except StopIteration:
-            self._generator = None
-        else:
-            return self._updateGenerator, size
+            if self._generator is g:
+                self._generator = None
 
 class IntNStringReceiver(MultiBufferer):
     """This class is identical to the IntNStringReceiver provided by Twisted,
