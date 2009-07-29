@@ -32,13 +32,17 @@ class MultiBufferer(protocol.Protocol):
     mode = MODE_RAW
     initial_delimiter = '\r\n'
     current_state = _generator = _generator_state = None
+    _closed = False
     
     def __init__(self):
         self._buffer = BufferQueue(self.initial_delimiter)
     
     def dataReceived(self, data):
+        if self._closed: 
+            return
+        
         self._buffer.push(data)
-        while self._buffer:
+        while self._buffer and not self._closed:
             if self.mode == MODE_RAW:
                 self._rawDataReceived(self._buffer.pop())
             elif self.mode == MODE_DELIMITED:
@@ -166,6 +170,18 @@ class MultiBufferer(protocol.Protocol):
         except StopIteration:
             if self._generator is g:
                 self._generator = None
+    
+    def close(self, disconnect=True):
+        """Stop buffering incoming data.
+        
+        This will clear the input buffer and stop adding new data to the 
+        buffer. If 'disconnect' is True, this will also lose the connection on
+        the transport.
+        """
+        self._buffer.clear()
+        self._closed = True
+        if disconnect:
+            self.transport.loseConnection()
 
 class IntNStringReceiver(MultiBufferer):
     """This class is identical to the IntNStringReceiver provided by Twisted,
