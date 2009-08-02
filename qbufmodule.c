@@ -30,6 +30,7 @@ typedef struct {
     Py_ssize_t cur_offset;
     char *delimiter;
     Py_ssize_t delim_size;
+    PyObject *delim_obj;
 } BufferQueue;
 
 typedef struct {
@@ -230,7 +231,7 @@ BufferQueue_dealloc(BufferQueue *self)
 {
     BufferQueue_clear_buffer(self);
     PyMem_Free(self->buffer);
-    PyMem_Free(self->delimiter);
+    Py_XDECREF(self->delim_obj);
     self->ob_type->tp_free((PyObject *)self);
 }
 
@@ -243,6 +244,7 @@ BufferQueue_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     if (self != NULL) {
         self->buffer = (PyStringObject **)NULL;
         self->start_idx = self->end_idx = 0;
+        self->delim_obj = NULL;
         self->delimiter = NULL;
         self->delim_size = 0;
         self->n_items = self->tot_length = self->cur_offset = 0;
@@ -251,35 +253,23 @@ BufferQueue_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     return (PyObject *)self;
 }
 
+static int BufferQueue_setdelim(BufferQueue *, PyObject *, void *);
 
 static int
 BufferQueue_init(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"delimiter", NULL};
-    char *delim_tmp;
-    PyObject *delim_obj = Py_None;
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|O", kwlist, &delim_obj))
+    PyObject *delim_tmp = Py_None;
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|O", kwlist, &delim_tmp))
         return -1; 
     
-    if (delim_obj != Py_None) {
-        if (! PyString_Check(delim_obj)) {
-            PyErr_SetString(PyExc_TypeError, "delimiter must be a string");
-            return -1;
-        }
-        if (PyString_AsStringAndSize(delim_obj, &delim_tmp, &self->delim_size) == -1)
-            return -1;
-        self->delimiter = (char *)PyMem_Malloc(self->delim_size);
-        if (self->delimiter == NULL) {
-            PyErr_SetString(PyExc_MemoryError, "malloc of delimiter failed");
-            return -1;
-        }
-        memcpy(self->delimiter, delim_tmp, self->delim_size);
-    }
+    if (BufferQueue_setdelim(self, delim_tmp, NULL) == -1)
+        return -1;
 
     self->buffer_length = INITIAL_BUFFER_SIZE;
     self->buffer = PyMem_New(PyStringObject *, self->buffer_length);
     if (self->buffer == NULL) {
-        PyMem_Free(self->delimiter);
+        Py_XDECREF(self->delim_obj);
         PyErr_SetString(PyExc_MemoryError, "malloc of buffer failed");
         return -1;
     }
@@ -292,35 +282,28 @@ BufferQueue_getdelim(BufferQueue *self, void *closure)
 {
     if (self->delim_size == 0)
         Py_RETURN_NONE;
-    else
-        return PyString_FromStringAndSize(self->delimiter, self->delim_size);
+    else {
+        Py_INCREF(self->delim_obj);
+        return self->delim_obj;
+    }
 }
 
 static int
 BufferQueue_setdelim(BufferQueue *self, PyObject *value, void *closure)
 {
+    Py_XDECREF(self->delim_obj);
     if (value == Py_None) {
-        PyMem_Free(self->delimiter);
         self->delimiter = NULL;
+        self->delim_obj = NULL;
         self->delim_size = 0;
         return 0;
     }
-    if (! PyString_Check(value)) {
-        PyErr_SetString(PyExc_TypeError, "delimiter must be a string");
+    PyObject *value_string = PyObject_Str(value);
+    if (!value_string)
         return -1;
-    }
-    char *delim_tmp;
-    Py_ssize_t delim_size;
-    if (PyString_AsStringAndSize(value, &delim_tmp, &delim_size) == -1)
-        return -1;
-    char *realloc_tmp = PyMem_Realloc(self->delimiter, delim_size);
-    if (realloc_tmp == NULL) {
-        PyErr_SetString(PyExc_MemoryError, "realloc of delimiter failed");
-        return -1;
-    }
-    self->delimiter = realloc_tmp;
-    memcpy(self->delimiter, delim_tmp, delim_size);
-    self->delim_size = delim_size;
+    self->delimiter = PyString_AS_STRING(value_string);
+    self->delim_size = PyString_GET_SIZE(value_string);
+    self->delim_obj = value_string;
     return 0;
 }
 

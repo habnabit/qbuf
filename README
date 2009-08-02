@@ -1,4 +1,4 @@
-qbuf 0.9.2
+qbuf 0.9.3
 
 qbuf provides a rather simple string buffer for python, written in C. Python
 2.5 or greater is required to build and use this package.
