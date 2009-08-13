@@ -113,9 +113,9 @@ class MultiBufferer(protocol.Protocol):
     
     def _lineReceived(self, line):
         if self._generator:
-            self._updateGenerator(data)
+            self._updateGenerator(line)
         else:
-            self.lineReceived(data)
+            self.lineReceived(line)
     
     def lineReceived(self, line):
         """Called when the buffering mode is MODE_DELIMITED and there is a new 
