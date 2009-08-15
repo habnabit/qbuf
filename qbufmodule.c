@@ -355,15 +355,24 @@ BufferQueue_dopush_many(BufferQueue *self, PyObject *args, PyObject *kwds)
     
     PyObject *item;
     while ((item = PyIter_Next(iter)) != NULL) {
+        if (!PyString_Check(item)) {
+            PyErr_Format(PyExc_ValueError, "push_many() requires an iterable "
+                "of strings (got %.50s instead)", item->ob_type->tp_name);
+            goto error;
+        }
         if (BufferQueue_push(self, (PyStringObject *)item) == -1)
-            return NULL;
+            goto error;
     }
     
-    Py_DECREF(iter);
     if (PyErr_Occurred() != NULL)
-        return NULL;
-    else
-        Py_RETURN_NONE;
+        goto error;
+    
+    Py_DECREF(iter);
+    Py_RETURN_NONE;
+
+error:
+    Py_DECREF(iter);
+    return NULL;
 }
 
 PyDoc_STRVAR(BufferQueue_doc_pop,
@@ -616,9 +625,9 @@ init_qbuf(void)
     PyModule_AddObject(m, "BufferQueue", (PyObject *)&BufferQueueType);
     
     qbuf_underflow = PyErr_NewException("qbuf.BufferUnderflow", NULL, NULL);
-	if (qbuf_underflow == NULL)
-		return;
-	Py_INCREF(qbuf_underflow);
-	PyModule_AddObject(m, "BufferUnderflow", qbuf_underflow);
+    if (qbuf_underflow == NULL)
+        return;
+    Py_INCREF(qbuf_underflow);
+    PyModule_AddObject(m, "BufferUnderflow", qbuf_underflow);
     
 }
