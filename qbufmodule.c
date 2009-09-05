@@ -5,6 +5,19 @@
 #include <Python.h>
 #include "structmember.h"
 
+#ifndef Py_RETURN_NONE
+#define Py_RETURN_NONE do { Py_INCREF(Py_None); return Py_None; } while (0)
+#endif
+
+#ifndef PyMODINIT_FUNC
+#define PyMODINIT_FUNC void
+#endif
+
+#if PY_VERSION_HEX < 0x02050000
+typedef int Py_ssize_t;
+typedef int (*lenfunc) (PyObject *);
+#endif
+
 #define INITIAL_BUFFER_SIZE 8
 
 static PyObject *qbuf_underflow;
@@ -388,16 +401,26 @@ BufferQueue_dopop(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"length", NULL};
     Py_ssize_t out_string_size = self->tot_length;
+#if PY_VERSION_HEX < 0x02050000
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|i:pop", kwlist,
+            &out_string_size))
+#else
     if (! PyArg_ParseTupleAndKeywords(args, kwds, "|n:pop", kwlist,
             &out_string_size))
+#endif
         return NULL;
     if (out_string_size < 0) {
         PyErr_SetString(PyExc_ValueError, "tried to pop a negative number of "
             "bytes from buffer");
         return NULL;
     } else if (out_string_size > self->tot_length) {
+#if PY_VERSION_HEX < 0x02050000
+        PyErr_Format(qbuf_underflow, "buffer underflow: currently at %i "
+            "bytes, tried to pop %i bytes", self->tot_length, out_string_size);
+#else
         PyErr_Format(qbuf_underflow, "buffer underflow: currently at %zd "
             "bytes, tried to pop %zd bytes", self->tot_length, out_string_size);
+#endif
         return NULL;
     }
     return (PyObject *)BufferQueue_pop(self, out_string_size);
@@ -416,8 +439,13 @@ BufferQueue_dopop_atmost(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"length", NULL};
     Py_ssize_t out_string_size;
+#if PY_VERSION_HEX < 0x02050000
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "i:pop_atmost", kwlist,
+            &out_string_size))
+#else
     if (! PyArg_ParseTupleAndKeywords(args, kwds, "n:pop_atmost", kwlist,
             &out_string_size))
+#endif
         return NULL;
     if (out_string_size < 0) {
         PyErr_SetString(PyExc_ValueError, "tried to pop a negative number of "
@@ -524,8 +552,13 @@ static PyMethodDef BufferQueue_methods[] = {
 static PyObject *
 BufferQueue_repr(BufferQueue *self)
 {
+#if PY_VERSION_HEX < 0x02050000
+    return PyString_FromFormat("<BufferQueue of %i bytes at %p>",
+        self->tot_length, self);
+#else
     return PyString_FromFormat("<BufferQueue of %zd bytes at %p>",
         self->tot_length, self);
+#endif
 }
 
 static PyObject *
@@ -605,10 +638,6 @@ static PyTypeObject BufferQueueType = {
 static PyMethodDef qbuf_methods[] = {
     {NULL}  /* Sentinel */
 };
-
-#ifndef PyMODINIT_FUNC  /* declarations for DLL import/export */
-#define PyMODINIT_FUNC void
-#endif
 
 PyMODINIT_FUNC
 init_qbuf(void) 

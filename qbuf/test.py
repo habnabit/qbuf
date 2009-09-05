@@ -1,10 +1,9 @@
 """Unit tests for qbuf.
 """
-from __future__ import with_statement
 import StringIO
 import unittest
+import random
 import qbuf
-import os
 
 class BufferPair(object):
     def __init__(self, case, buf=None, data=None, data_length=10240):
@@ -13,7 +12,8 @@ class BufferPair(object):
             buf = qbuf.BufferQueue()
         self.test_buf = buf
         if data is None:
-            data = os.urandom(data_length)
+            data = ''.join([chr(random.randrange(256)) 
+                for _ in xrange(data_length)])
         self.in_buf = StringIO.StringIO(data)
         self.out_buf = StringIO.StringIO(data)
         self.size_delta = 0
@@ -47,30 +47,36 @@ class BufferPair(object):
         return self
     
     def __exit__(self, *exc_info):
+        self.close()
+    
+    def close(self):
         self.case.assertEquals(len(self.test_buf), 0)
 
 class QbufTest(unittest.TestCase):
     def test_growth(self):
-        with BufferPair(self) as pair:
-            for x in xrange(128):
-                pair.push(x + 1)
-            pair.pop()
+        pair = BufferPair(self)
+        for x in xrange(128):
+            pair.push(x + 1)
+        pair.pop()
+        pair.close()
     
     def test_circularity(self):
-        with BufferPair(self) as pair:
+        pair = BufferPair(self)
+        pair.push(24)
+        for x in xrange(16):
             pair.push(24)
-            for x in xrange(16):
-                pair.push(24)
-                pair.pop(24)
             pair.pop(24)
+        pair.pop(24)
+        pair.close()
     
     def test_growth_and_circularity(self):
-        with BufferPair(self) as pair:
+        pair = BufferPair(self)
+        pair.push(23)
+        for x in xrange(128):
             pair.push(23)
-            for x in xrange(128):
-                pair.push(23)
-                pair.pop(6)
-            pair.pop(23*129 - 6*128)
+            pair.pop(6)
+        pair.pop(23*129 - 6*128)
+        pair.close()
     
     def test_delimiter_search(self):
         data = (
@@ -85,12 +91,13 @@ class QbufTest(unittest.TestCase):
             '***' # 3
             '**' # 2
         )
-        with BufferPair(self, qbuf.BufferQueue('***'), data) as pair:
-            for x in [6, 6, 7, 7, 7, 8, 1, 7, 3, 2]:
-                pair.push(x)
-            for x in xrange(5):
-                pair.popline()
-            pair.pop(2)
+        pair = BufferPair(self, qbuf.BufferQueue('***'), data)
+        for x in [6, 6, 7, 7, 7, 8, 1, 7, 3, 2]:
+            pair.push(x)
+        for x in xrange(5):
+            pair.popline()
+        pair.pop(2)
+        pair.close()
     
     def test_repr(self):
         buf = qbuf.BufferQueue()
@@ -136,13 +143,14 @@ class QbufTest(unittest.TestCase):
         self.assertEquals('baz', buf.pop())
     
     def test_clear(self):
-        with BufferPair(self) as pair:
-            for x in xrange(24):
-                pair.push(8)
-            pair.clear()
-            self.assertRaises(qbuf.BufferUnderflow, pair.test_buf.pop, 1)
-            for x in xrange(12):
-                pair.push(8)
-            pair.pop(8*6)
-            pair.clear()
-            self.assertRaises(qbuf.BufferUnderflow, pair.test_buf.pop, 1)
+        pair = BufferPair(self)
+        for x in xrange(24):
+            pair.push(8)
+        pair.clear()
+        self.assertRaises(qbuf.BufferUnderflow, pair.test_buf.pop, 1)
+        for x in xrange(12):
+            pair.push(8)
+        pair.pop(8*6)
+        pair.clear()
+        self.assertRaises(qbuf.BufferUnderflow, pair.test_buf.pop, 1)
+        pair.close()
