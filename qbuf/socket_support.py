@@ -1,7 +1,7 @@
 """socket module support for qbuf.
 """
 
-from __future__ import absolute_import
+#from __future__ import absolute_import
 from qbuf import BufferQueue, BufferUnderflow
 import socket, errno
 

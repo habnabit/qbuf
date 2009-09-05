@@ -4,7 +4,7 @@ MODE_RAW, MODE_DELIMITED, and MODE_STATEFUL are module-level constants for
 changing the buffering mode of MultiBufferer.
 """
 
-from __future__ import absolute_import
+#from __future__ import absolute_import
 from qbuf import BufferQueue, BufferUnderflow
 from twisted.internet import protocol
 import struct
