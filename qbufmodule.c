@@ -90,22 +90,24 @@ BufferQueueIterator_advance(BufferQueueIterator *self)
 static int
 BufferQueue_push(BufferQueue *self, PyStringObject *string) 
 {
+    PyStringObject **l_buffer, **l_buffer_end;
+    Py_ssize_t width, split;
     if (PyString_GET_SIZE(string) == 0)
         return 0;
     
     if (self->n_items == self->buffer_length) {
-        PyStringObject **l_buffer = self->buffer, **l_buffer_end;
+        l_buffer = self->buffer;
         PyMem_Resize(l_buffer, PyStringObject *, self->buffer_length * 2);
         if (l_buffer == NULL) {
             PyErr_SetString(PyExc_MemoryError, "failed to realloc bigger buffer");
             return -1;
         }
         l_buffer_end = l_buffer + self->buffer_length;
-        Py_ssize_t width = sizeof(self->buffer);
+        width = sizeof(self->buffer);
         if (self->start_idx == 0 && self->end_idx == 0) {
             memcpy(l_buffer_end, l_buffer, self->buffer_length * width);
         } else {
-            Py_ssize_t split = self->buffer_length - self->start_idx;
+            split = self->buffer_length - self->start_idx;
             memcpy(l_buffer_end, l_buffer + self->start_idx, split * width);
             memcpy(l_buffer_end + split, l_buffer, self->end_idx * width);
         }
@@ -133,10 +135,13 @@ BufferQueue_advance_start(BufferQueue *self)
 static PyStringObject *
 BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
 {
+    PyObject *ret, *cur_string;
+    Py_ssize_t copied, to_copy, size, delta;
+    char *ret_dest;
     if (length == 0)
         return (PyStringObject *)PyString_FromString("");
     
-    PyObject *ret, *cur_string = (PyObject *)self->buffer[self->start_idx];
+    cur_string = (PyObject *)self->buffer[self->start_idx];
     if (self->cur_offset == 0 && PyString_GET_SIZE(cur_string) == length) {
         ret = (PyObject *)cur_string;
         BufferQueue_advance_start(self);
@@ -152,8 +157,8 @@ BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
         ret = PyString_FromStringAndSize((char *) NULL, length);
         if (ret == NULL)
             return NULL;
-        char *ret_dest = PyString_AS_STRING(ret);
-        Py_ssize_t copied = 0, to_copy, size, delta;
+        ret_dest = PyString_AS_STRING(ret);
+        copied = 0;
         while (copied < length) {
             to_copy = length - copied;
             size = PyString_GET_SIZE(cur_string);
@@ -181,13 +186,13 @@ BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
 static int
 BufferQueue_find_delim(BufferQueue *self, Py_ssize_t *loc) 
 {
+    BufferQueueIterator iter, split_iter;
+    Py_ssize_t pos, delim_pos, target;
     if (self->delim_size > self->tot_length)
         return -1;
     
-    BufferQueueIterator iter, split_iter;
     BufferQueueIterator_init(&iter, self);
-    Py_ssize_t pos, delim_pos;
-    Py_ssize_t target = self->tot_length - self->delim_size;
+    target = self->tot_length - self->delim_size;
     for (pos = 0; pos <= target; ++pos) {
         if (iter.char_idx + self->delim_size > iter.s_size) {
             split_iter = iter;
@@ -214,13 +219,14 @@ static int
 BufferQueue_popline(BufferQueue *self, PyStringObject **ret)
 {
     Py_ssize_t line_size;
+    PyStringObject *line, *delim;
     if (BufferQueue_find_delim(self, &line_size) == -1)
         return 0;
     
-    PyStringObject *line = BufferQueue_pop(self, line_size);
+    line = BufferQueue_pop(self, line_size);
     if (line == NULL)
         return -1;
-    PyStringObject *delim = BufferQueue_pop(self, self->delim_size);
+    delim = BufferQueue_pop(self, self->delim_size);
     if (delim == NULL)
         return -1;
     Py_DECREF(delim);
@@ -304,6 +310,7 @@ BufferQueue_getdelim(BufferQueue *self, void *closure)
 static int
 BufferQueue_setdelim(BufferQueue *self, PyObject *value, void *closure)
 {
+    PyObject *value_string;
     Py_XDECREF(self->delim_obj);
     if (value == Py_None) {
         self->delimiter = NULL;
@@ -311,7 +318,7 @@ BufferQueue_setdelim(BufferQueue *self, PyObject *value, void *closure)
         self->delim_size = 0;
         return 0;
     }
-    PyObject *value_string = PyObject_Str(value);
+    value_string = PyObject_Str(value);
     if (!value_string)
         return -1;
     self->delimiter = PyString_AS_STRING(value_string);
@@ -358,7 +365,7 @@ static PyObject *
 BufferQueue_dopush_many(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"iterable", NULL};
-    PyObject *iter;
+    PyObject *iter, *item;
     if (! PyArg_ParseTupleAndKeywords(args, kwds, "O:push_many", kwlist,
             &iter))
         return NULL;
@@ -366,7 +373,6 @@ BufferQueue_dopush_many(BufferQueue *self, PyObject *args, PyObject *kwds)
     if (iter == NULL)
         return NULL;
     
-    PyObject *item;
     while ((item = PyIter_Next(iter)) != NULL) {
         if (!PyString_Check(item)) {
             PyErr_Format(PyExc_ValueError, "push_many() requires an iterable "
@@ -470,12 +476,13 @@ raised.\n\
 static PyObject *
 BufferQueue_dopopline(BufferQueue *self)
 {
+    PyStringObject *ret;
+    int result;
     if (self->delim_size == 0) {
         PyErr_SetString(PyExc_ValueError, "no delimiter");
         return NULL;
     }
-    PyStringObject *ret;
-    int result = BufferQueue_popline(self, &ret);
+    result = BufferQueue_popline(self, &ret);
     if (result == -1)
         return NULL;
     else if (result == 0) {
@@ -496,15 +503,16 @@ buffer. If there was no delimiter set, a ValueError is raised.\n\
 static PyObject *
 BufferQueue_dopoplines(BufferQueue *self)
 {
+    PyObject *ret;
+    PyStringObject *ret_str;
+    int result;
     if (self->delim_size == 0) {
         PyErr_SetString(PyExc_ValueError, "no delimiter");
         return NULL;
     }
-    PyObject *ret = PyList_New(0);
+    ret = PyList_New(0);
     if (ret == NULL)
         return NULL;
-    int result;
-    PyStringObject *ret_str;
     while ((result = BufferQueue_popline(self, &ret_str)) == 1) {
         PyList_Append(ret, (PyObject *)ret_str);
         Py_DECREF(ret_str);
@@ -571,11 +579,11 @@ BufferQueue_iter(BufferQueue *self)
 static PyObject *
 BufferQueue_iternext(BufferQueue *self)
 {
+    Py_ssize_t out_string_size; 
     if (self->delim_size == 0) {
         PyErr_SetString(PyExc_ValueError, "no delimiter");
         return NULL;
     }
-    Py_ssize_t out_string_size; 
     if (BufferQueue_find_delim(self, &out_string_size) == -1) {
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
