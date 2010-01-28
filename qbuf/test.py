@@ -38,6 +38,12 @@ class BufferPair(object):
             self.out_buf.read(size), line + self.test_buf.delimiter)
         self.size_delta -= size
     
+    def popline_with_delim(self, delimiter):
+        line = self.test_buf.popline(delimiter)
+        size = len(line) + len(delimiter)
+        self.case.assertEquals(self.out_buf.read(size), line + delimiter)
+        self.size_delta -= size
+    
     def clear(self):
         self.test_buf.clear()
         self.out_buf.seek(self.size_delta, 1)
@@ -97,6 +103,20 @@ class QbufTest(unittest.TestCase):
         for x in xrange(5):
             pair.popline()
         pair.pop(2)
+        pair.close()
+    
+    def test_passed_delimiter(self):
+        data = (
+            'foo*bar&f' # 9
+            'oo*bar*foo&bar' # 14
+        )
+        pair = BufferPair(self, qbuf.BufferQueue(), data)
+        for x in [9, 14]:
+            pair.push(x)
+        pair.popline_with_delim('*')
+        pair.popline_with_delim('&')
+        pair.popline_with_delim('&')
+        pair.pop(3)
         pair.close()
     
     def test_repr(self):

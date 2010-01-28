@@ -184,27 +184,28 @@ BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
 }
 
 static int
-BufferQueue_find_delim(BufferQueue *self, Py_ssize_t *loc) 
+BufferQueue_find_delim(BufferQueue *self, Py_ssize_t *loc, 
+        Py_ssize_t delim_size, char *delimiter) 
 {
     BufferQueueIterator iter, split_iter;
     Py_ssize_t pos, delim_pos, target;
-    if (self->delim_size > self->tot_length)
+    if (delim_size > self->tot_length)
         return -1;
     
     BufferQueueIterator_init(&iter, self);
-    target = self->tot_length - self->delim_size;
+    target = self->tot_length - delim_size;
     for (pos = 0; pos <= target; ++pos) {
-        if (iter.char_idx + self->delim_size > iter.s_size) {
+        if (iter.char_idx + delim_size > iter.s_size) {
             split_iter = iter;
-            for (delim_pos = 0; delim_pos < self->delim_size; ++delim_pos) {
-                if (self->delimiter[delim_pos] != split_iter.s_ptr[split_iter.char_idx])
+            for (delim_pos = 0; delim_pos < delim_size; ++delim_pos) {
+                if (delimiter[delim_pos] != split_iter.s_ptr[split_iter.char_idx])
                     goto next_iter;
                 BufferQueueIterator_advance(&split_iter);
             }
             *loc = pos;
             return 0;
         } else {
-            if (memcmp(iter.s_ptr + iter.char_idx, self->delimiter, self->delim_size) == 0) {
+            if (memcmp(iter.s_ptr + iter.char_idx, delimiter, delim_size) == 0) {
                 *loc = pos;
                 return 0;
             }
@@ -216,17 +217,26 @@ BufferQueue_find_delim(BufferQueue *self, Py_ssize_t *loc)
 }
 
 static int
-BufferQueue_popline(BufferQueue *self, PyStringObject **ret)
+BufferQueue_popline(BufferQueue *self, PyStringObject **ret, 
+        Py_ssize_t delim_size, char *delimiter)
 {
     Py_ssize_t line_size;
     PyStringObject *line, *delim;
-    if (BufferQueue_find_delim(self, &line_size) == -1)
+    if (delim_size == -1) {
+        if (self->delim_size == 0) {
+            PyErr_SetString(PyExc_ValueError, "no delimiter");
+            return -1;
+        }
+        delim_size = self->delim_size;
+        delimiter = self->delimiter;
+    }
+    if (BufferQueue_find_delim(self, &line_size, delim_size, delimiter) == -1)
         return 0;
     
     line = BufferQueue_pop(self, line_size);
     if (line == NULL)
         return -1;
-    delim = BufferQueue_pop(self, self->delim_size);
+    delim = BufferQueue_pop(self, delim_size);
     if (delim == NULL)
         return -1;
     Py_DECREF(delim);
@@ -464,25 +474,27 @@ BufferQueue_dopop_atmost(BufferQueue *self, PyObject *args, PyObject *kwds)
 }
 
 PyDoc_STRVAR(BufferQueue_doc_popline,
-"popline() -> str\n\
+"popline([delimiter]) -> str\n\
 \n\
 Pop one line of data from the buffer. This scans the buffer for\n\
-the next occurrence of the buffer's delimiter, and then returns\n\
-everything up to and including the delimiter. If the delimiter\n\
-was not found or there was no delimiter set, a ValueError is\n\
-raised.\n\
+the next occurrence of the provided delimiter, or the buffer's\n\
+delimiter if none was provided, and then returns everything up\n\
+to and including the delimiter. If the delimiter was not found\n\
+or there was no delimiter set, a ValueError is raised.\n\
 ");
 
 static PyObject *
-BufferQueue_dopopline(BufferQueue *self)
+BufferQueue_dopopline(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
+    static char *kwlist[] = {"delimiter", NULL};
+    Py_ssize_t delim_length = -1;
+    char *delimiter = NULL;
     PyStringObject *ret;
     int result;
-    if (self->delim_size == 0) {
-        PyErr_SetString(PyExc_ValueError, "no delimiter");
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s#:popline", kwlist,
+            &delimiter, &delim_length))
         return NULL;
-    }
-    result = BufferQueue_popline(self, &ret);
+    result = BufferQueue_popline(self, &ret, delim_length, delimiter);
     if (result == -1)
         return NULL;
     else if (result == 0) {
@@ -493,27 +505,31 @@ BufferQueue_dopopline(BufferQueue *self)
 }
 
 PyDoc_STRVAR(BufferQueue_doc_poplines,
-"poplines() -> list\n\
+"poplines([delimiter]) -> list\n\
 \n\
 Pop as many lines off of the buffer as is possible. This will\n\
 collect and return a list of all of the lines that were in the\n\
-buffer. If there was no delimiter set, a ValueError is raised.\n\
+buffer. If there was no delimiter set and no delimiter was \n\
+provided, a ValueError is raised.\n\
 ");
 
 static PyObject *
-BufferQueue_dopoplines(BufferQueue *self)
+BufferQueue_dopoplines(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
+    static char *kwlist[] = {"delimiter", NULL};
+    Py_ssize_t delim_length = -1;
+    char *delimiter = NULL;
     PyObject *ret;
     PyStringObject *ret_str;
     int result;
-    if (self->delim_size == 0) {
-        PyErr_SetString(PyExc_ValueError, "no delimiter");
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s#:poplines", kwlist,
+            &delimiter, &delim_length))
         return NULL;
-    }
     ret = PyList_New(0);
     if (ret == NULL)
         return NULL;
-    while ((result = BufferQueue_popline(self, &ret_str)) == 1) {
+    while ((result = BufferQueue_popline(
+            self, &ret_str, delim_length, delimiter)) == 1) {
         PyList_Append(ret, (PyObject *)ret_str);
         Py_DECREF(ret_str);
     }
@@ -540,20 +556,20 @@ BufferQueue_doclear(BufferQueue *self)
 }
 
 static PyMethodDef BufferQueue_methods[] = {
-    {"push", (PyCFunction)BufferQueue_dopush, METH_VARARGS | METH_KEYWORDS, 
-        BufferQueue_doc_push},
+    {"push", (PyCFunction)BufferQueue_dopush, 
+        METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_push},
     {"push_many", (PyCFunction)BufferQueue_dopush_many, 
         METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_push_many},
-    {"pop", (PyCFunction)BufferQueue_dopop, METH_VARARGS | METH_KEYWORDS, 
-        BufferQueue_doc_pop},
+    {"pop", (PyCFunction)BufferQueue_dopop, 
+        METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_pop},
     {"pop_atmost", (PyCFunction)BufferQueue_dopop_atmost, 
         METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_pop_atmost},
-    {"popline", (PyCFunction)BufferQueue_dopopline, METH_NOARGS, 
-        BufferQueue_doc_popline},
-    {"poplines", (PyCFunction)BufferQueue_dopoplines, METH_NOARGS,
-        BufferQueue_doc_poplines},
-    {"clear", (PyCFunction)BufferQueue_doclear, METH_NOARGS,
-        BufferQueue_doc_clear},
+    {"popline", (PyCFunction)BufferQueue_dopopline, 
+        METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_popline},
+    {"poplines", (PyCFunction)BufferQueue_dopoplines, 
+        METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_poplines},
+    {"clear", (PyCFunction)BufferQueue_doclear, 
+        METH_NOARGS, BufferQueue_doc_clear},
     {NULL}  /* Sentinel */
 };
 
@@ -584,7 +600,8 @@ BufferQueue_iternext(BufferQueue *self)
         PyErr_SetString(PyExc_ValueError, "no delimiter");
         return NULL;
     }
-    if (BufferQueue_find_delim(self, &out_string_size) == -1) {
+    if (BufferQueue_find_delim(self, &out_string_size, 
+            self->delim_size, self->delimiter) == -1) {
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
     }
