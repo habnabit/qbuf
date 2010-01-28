@@ -6,7 +6,8 @@ changing the buffering mode of MultiBufferer.
 
 #from __future__ import absolute_import
 from qbuf import BufferQueue, BufferUnderflow
-from twisted.internet import protocol
+from twisted.internet import protocol, defer
+import collections
 import struct
 
 MODE_RAW, MODE_DELIMITED, MODE_STATEFUL = xrange(3)
@@ -28,14 +29,74 @@ class MultiBufferer(protocol.Protocol):
     called for every so many bytes received. If self.current_state is None,
     getInitialState is called to get the initial state. See the documentation
     on getInitialState.
+    
+    MultiBufferers can also return Deferreds that are fired when a certain 
+    amount of data has been sent over the wire. This is intended for use with
+    twisted.internet.defer.inlineCallbacks.
     """
     mode = MODE_RAW
     initial_delimiter = '\r\n'
-    current_state = _generator = _generator_state = None
+    current_state = None
     _closed = False
     
     def __init__(self):
         self._buffer = BufferQueue(self.initial_delimiter)
+        self._callbacks = collections.deque()
+    
+    def read(self, size=None):
+        """Wait for some data to be received.
+        
+        If 'size' is provided, wait for that many bytes to be received. 
+        Otherwise, wait for the next chunk of incoming data, regardless of the 
+        size. Returns a Deferred that will be fired with the received data.
+        """
+        d = defer.Deferred()
+        if size is None:
+            self._callbacks.append((d, MODE_RAW, None))
+        else:
+            self._callbacks.append((d, MODE_STATEFUL, size))
+        return d
+    
+    def unpack(self, fmt):
+        """Wait for some struct to be received.
+        
+        This method takes a struct format as understood by the 'struct' module
+        and waits for enough data to be received to unpack it. Returns a 
+        Deferred that will be fired with the unpacked struct.
+        """
+        def _transform(data):
+            return struct.unpack(fmt, data)
+        d = self.read(struct.calcsize(fmt))
+        d.addCallback(_transform)
+        return d
+    
+    def readline(self, delimiter=None):
+        """Wait for a line to be received.
+        
+        Wait for a line of data to be received. If 'delimiter' is provided, the
+        underlying BufferQueue's delimiter will be set to whatever is provided
+        when the MultiBufferer is ready to receive that line. Returns a 
+        Deferred that will be fired with the received line, without delimiter.
+        """
+        d = defer.Deferred()
+        self._callbacks.append((d, MODE_DELIMITED, delimiter))
+        return d
+    
+    def write(self, data):
+        """Send some data over the wire.
+        
+        This method merely forwards the data to the underlying transport, 
+        provided to parallel the read/readline methods.
+        """
+        self.transport.write(data)
+    
+    def _updateCallbacks(self, data):
+        d, _, _ = self._callbacks.popleft()
+        d.callback(data)
+        if self._callbacks:
+            d, mode, extra = self._callbacks[0]
+            if mode == MODE_DELIMITED and extra is not None:
+                self.delimiter = extra
     
     def dataReceived(self, data):
         if self._closed: 
@@ -43,23 +104,27 @@ class MultiBufferer(protocol.Protocol):
         
         self._buffer.push(data)
         while self._buffer and not self._closed:
-            if self.mode == MODE_RAW:
+            if self._callbacks:
+                mode = self._callbacks[0][1]
+            else:
+                mode = self.mode
+            if mode == MODE_RAW:
                 self._rawDataReceived(self._buffer.pop())
-            elif self.mode == MODE_DELIMITED:
+            elif mode == MODE_DELIMITED:
                 try:
                     line = self._buffer.popline()
                 except ValueError:
                     break
                 else:
                     self._lineReceived(line)
-            elif self.mode == MODE_STATEFUL:
-                if self._generator:
+            elif mode == MODE_STATEFUL:
+                if self._callbacks:
                     try:
-                        chunk = self._buffer.pop(self._generator_state)
+                        chunk = self._buffer.pop(self._callbacks[0][2])
                     except BufferUnderflow:
                         break
                     else:
-                        self._updateGenerator(chunk)
+                        self._updateCallbacks(chunk)
                 else:
                     if self.current_state is None:
                         self.current_state = self.getInitialState()
@@ -100,8 +165,8 @@ class MultiBufferer(protocol.Protocol):
     delimiter = property(_get_delimiter, _set_delimiter)
     
     def _rawDataReceived(self, data):
-        if self._generator:
-            self._updateGenerator(data)
+        if self._callbacks:
+            self._updateCallbacks(data)
         else:
             self.rawDataReceived(data)
     
@@ -112,8 +177,8 @@ class MultiBufferer(protocol.Protocol):
         raise NotImplementedError
     
     def _lineReceived(self, line):
-        if self._generator:
-            self._updateGenerator(line)
+        if self._callbacks:
+            self._updateCallbacks(line)
         else:
             self.lineReceived(line)
     
@@ -134,43 +199,6 @@ class MultiBufferer(protocol.Protocol):
         """
         raise NotImplementedError
     
-    def startGenerator(self, gen, mode=None):
-        """Use a generator in place of callbacks.
-        
-        A convenience function for use with any buffering mode. A generator 
-        passed to this method will receive data as it comes in. In MODE_RAW
-        and MODE_DELIMITED, the value yielded by the generator must be None. 
-        In MODE_STATEFUL, the generator must yield the number of bytes to be 
-        sent.
-        
-        The generator must change the MultiBufferer's state when it is done
-        yielding values and before it returns; any StopIteration exceptions 
-        are ignored. Otherwise, the MultiBufferer would overwrite the state 
-        set by the generator. Calling startGenerator from a started generator
-        will overwrite the previous generator but otherwise function as 
-        expected.
-        
-        If 'mode' is passed, the buffering mode is changed before the 
-        generator starts.
-        """
-        self._generator = gen
-        if mode is not None:
-            self.setMode(mode)
-        # Since g.next() is the same as g.send(None), let's not duplicate the
-        # setting of self._generator_state and catching the StopIteration.
-        self._updateGenerator(None)
-    
-    def _updateGenerator(self, data):
-        # Someone might call startGenerator from within a started generator,
-        # so make sure that if we unset the generator, we're unsetting the 
-        # generator that raised the StopIteration.
-        g = self._generator
-        try:
-            self._generator_state = g.send(data)
-        except StopIteration:
-            if self._generator is g:
-                self._generator = None
-    
     def close(self, disconnect=True):
         """Stop buffering incoming data.
         
@@ -182,6 +210,11 @@ class MultiBufferer(protocol.Protocol):
         self._closed = True
         if disconnect:
             self.transport.loseConnection()
+    
+    def connectionLost(self, reason):
+        self.close(False)
+        for d, _, _ in self._callbacks:
+            d.errback(reason)
 
 class IntNStringReceiver(MultiBufferer):
     """This class is identical to the IntNStringReceiver provided by Twisted,

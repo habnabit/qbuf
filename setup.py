@@ -2,7 +2,7 @@ from distutils.core import setup, Extension
 setup(
     name='qbuf', 
     version='0.9.4',
-    packages=['qbuf'],
+    packages=['qbuf', 'qbuf.support'],
     ext_modules=[
         Extension('qbuf._qbuf', ['qbufmodule.c'])],
     
