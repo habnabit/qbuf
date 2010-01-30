@@ -93,10 +93,6 @@ class MultiBufferer(protocol.Protocol):
     def _updateCallbacks(self, data):
         d, _, _ = self._callbacks.popleft()
         d.callback(data)
-        if self._callbacks:
-            d, mode, extra = self._callbacks[0]
-            if mode == MODE_DELIMITED and extra is not None:
-                self.delimiter = extra
     
     def dataReceived(self, data):
         if self._closed: 
@@ -104,15 +100,18 @@ class MultiBufferer(protocol.Protocol):
         
         self._buffer.push(data)
         while self._buffer and not self._closed:
+            delimiter = ()
             if self._callbacks:
-                mode = self._callbacks[0][1]
+                _, mode, extra = self._callbacks[0]
+                if extra:
+                    delimiter = extra,
             else:
                 mode = self.mode
             if mode == MODE_RAW:
                 self._rawDataReceived(self._buffer.pop())
             elif mode == MODE_DELIMITED:
                 try:
-                    line = self._buffer.popline()
+                    line = self._buffer.popline(*delimiter)
                 except ValueError:
                     break
                 else:
@@ -120,7 +119,7 @@ class MultiBufferer(protocol.Protocol):
             elif mode == MODE_STATEFUL:
                 if self._callbacks:
                     try:
-                        chunk = self._buffer.pop(self._callbacks[0][2])
+                        chunk = self._buffer.pop(extra)
                     except BufferUnderflow:
                         break
                     else:
