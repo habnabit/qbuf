@@ -29,7 +29,8 @@ Initialize a new buffer. If the delimiter is provided, it can be\n\
 used to pop lines off instead of just bytes.\n\
 \n\
 Iterating over a BufferQueue is the same as repeatedly calling\n\
-.popline() on it. An empty BufferQueue evaluates to boolean False.\n\
+.popline() on it, except that the delimiter is included in the\n\
+string yielded. An empty BufferQueue evaluates to boolean false.\n\
 ");
 
 typedef struct {
@@ -480,7 +481,8 @@ Pop one line of data from the buffer. This scans the buffer for\n\
 the next occurrence of the provided delimiter, or the buffer's\n\
 delimiter if none was provided, and then returns everything up\n\
 to and including the delimiter. If the delimiter was not found\n\
-or there was no delimiter set, a ValueError is raised.\n\
+or there was no delimiter set, a ValueError is raised. The \n\
+delimiter is not included in the string returned.\n\
 ");
 
 static PyObject *
@@ -510,7 +512,8 @@ PyDoc_STRVAR(BufferQueue_doc_poplines,
 Pop as many lines off of the buffer as is possible. This will\n\
 collect and return a list of all of the lines that were in the\n\
 buffer. If there was no delimiter set and no delimiter was \n\
-provided, a ValueError is raised.\n\
+provided, a ValueError is raised. The delimiter is not included\n\
+in the strings returned.\n\
 ");
 
 static PyObject *
