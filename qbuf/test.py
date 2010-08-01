@@ -3,6 +3,7 @@
 import StringIO
 import unittest
 import random
+import struct
 import qbuf
 
 class BufferPair(object):
@@ -177,3 +178,30 @@ class QbufTest(unittest.TestCase):
         pair.clear()
         self.assertRaises(qbuf.BufferUnderflow, pair.test_buf.pop, 1)
         pair.close()
+    
+    def test_pop_view(self):
+        buf = qbuf.BufferQueue()
+        buf.push_many(['foo', 'bar'])
+        for part in ['fo', 'ob', 'ar']:
+            b = buf.pop_view(2)
+            self.assert_(isinstance(b, buffer))
+            self.assertEquals(part, b[:])
+        self.assertRaises(qbuf.BufferUnderflow, buf.pop_view, 2)
+        b = buf.pop_view(0)
+        self.assert_(isinstance(b, buffer))
+        self.assertEquals('', b[:])
+        buf.push_many(['foo', 'bar', 'baz'])
+        b = buf.pop_view()
+        self.assert_(isinstance(b, buffer))
+        self.assertEquals('foobarbaz', b[:])
+    
+    def test_pop_struct(self):
+        buf = qbuf.BufferQueue()
+        buf.push('\x01\x02\x03\x04\x05\x06')
+        a, b = buf.pop_struct('!BH')
+        self.assertEquals(a, 0x1)
+        self.assertEquals(b, 0x203)
+        a, = buf.pop_struct('!H')
+        self.assertEquals(a, 0x405)
+        self.assertRaises(qbuf.BufferUnderflow, buf.pop_struct, '!H')
+        self.assertRaises(struct.error, buf.pop_struct, '_bad_struct_format')

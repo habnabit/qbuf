@@ -16,6 +16,7 @@
 #if PY_VERSION_HEX < 0x02050000
   typedef int Py_ssize_t;
   typedef int (*lenfunc) (PyObject *);
+#  define PyNumber_AsSsize_t(ob, exc) PyInt_AsLong(ob)
 #  define ARG_PY_SSIZE_T "i"
 #  define FMT_PY_SSIZE_T "%i"
 #else
@@ -26,6 +27,7 @@
 #define INITIAL_BUFFER_SIZE 8
 
 static PyObject *qbuf_underflow;
+static PyObject *_struct_obj;
 
 PyDoc_STRVAR(BufferQueue_doc,
 "BufferQueue([delimiter])\n\
@@ -133,30 +135,41 @@ BufferQueue_push(BufferQueue *self, PyStringObject *string)
 static void
 BufferQueue_advance_start(BufferQueue *self)
 {
+    Py_DECREF(self->buffer[self->start_idx]);
+    self->cur_offset = 0;
     --self->n_items;
     if (++self->start_idx == self->buffer_length)
         self->start_idx = 0;
 }
 
-static PyStringObject *
-BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
+static PyObject *
+BufferQueue_pop(BufferQueue *self, Py_ssize_t length, int as_buffer)
 {
-    PyObject *ret, *cur_string;
+    PyObject *ret = NULL, *cur_string;
     Py_ssize_t copied, to_copy, size, delta;
     char *ret_dest;
-    if (length == 0)
-        return (PyStringObject *)PyString_FromString("");
+    if (length == 0) {
+        ret = PyString_FromString("");
+        goto cleanup;
+    }
     
     cur_string = (PyObject *)self->buffer[self->start_idx];
     if (self->cur_offset == 0 && PyString_GET_SIZE(cur_string) == length) {
         ret = (PyObject *)cur_string;
+        Py_INCREF(ret);
         BufferQueue_advance_start(self);
+    } else if (as_buffer && self->cur_offset + length <= 
+            PyString_GET_SIZE(cur_string)) {
+        if (!(ret = PyBuffer_FromObject(cur_string, self->cur_offset, length)))
+            return NULL;
+        if (self->cur_offset + length == PyString_GET_SIZE(cur_string))
+            BufferQueue_advance_start(self);
+        else
+            self->cur_offset += length;
     } else if (self->cur_offset + length == PyString_GET_SIZE(cur_string)) {
         if (!(ret = PyString_FromStringAndSize(
                 PyString_AS_STRING(cur_string) + self->cur_offset, length)))
             return NULL;
-        self->cur_offset = 0;
-        Py_DECREF(cur_string);
         BufferQueue_advance_start(self);
     } else {
         if (!(ret = PyString_FromStringAndSize(NULL, length)))
@@ -170,8 +183,6 @@ BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
                 delta = size - self->cur_offset;
                 memcpy(ret_dest + copied, 
                     PyString_AS_STRING(cur_string) + self->cur_offset, delta);
-                self->cur_offset = 0;
-                Py_DECREF(cur_string);
                 BufferQueue_advance_start(self);
                 cur_string = (PyObject *)self->buffer[self->start_idx];
             } else {
@@ -184,7 +195,15 @@ BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
         }
     }
     self->tot_length -= length;
-    return (PyStringObject *)ret;
+
+cleanup:
+    if (ret && as_buffer && !PyBuffer_Check(ret)) {
+        PyObject *tmp = ret;
+        /* Implicitly returns NULL on error. */
+        ret = PyBuffer_FromObject(tmp, 0, Py_END_OF_BUFFER);
+        Py_DECREF(tmp);
+    }
+    return ret;
 }
 
 static int
@@ -225,7 +244,7 @@ BufferQueue_popline(BufferQueue *self, PyStringObject **ret,
         Py_ssize_t delim_size, char *delimiter)
 {
     Py_ssize_t line_size;
-    PyStringObject *line, *delim;
+    PyObject *line, *delim;
     if (delim_size == -1) {
         if (self->delim_size == 0) {
             PyErr_SetString(PyExc_ValueError, "no delimiter");
@@ -240,12 +259,12 @@ BufferQueue_popline(BufferQueue *self, PyStringObject **ret,
     if (BufferQueue_find_delim(self, &line_size, delim_size, delimiter) == -1)
         return 0;
     
-    if (!(line = BufferQueue_pop(self, line_size)))
+    if (!(line = BufferQueue_pop(self, line_size, 0)))
         return -1;
-    if (!(delim = BufferQueue_pop(self, delim_size)))
+    if (!(delim = BufferQueue_pop(self, delim_size, 0)))
         return -1;
     Py_DECREF(delim);
-    *ret = line;
+    *ret = (PyStringObject *)line;
     return 1;
 }
 
@@ -435,7 +454,7 @@ BufferQueue_dopop(BufferQueue *self, PyObject *args, PyObject *kwds)
             self->tot_length, out_string_size);
         return NULL;
     }
-    return (PyObject *)BufferQueue_pop(self, out_string_size);
+    return BufferQueue_pop(self, out_string_size, 0);
 }
 
 PyDoc_STRVAR(BufferQueue_doc_pop_atmost,
@@ -461,7 +480,84 @@ BufferQueue_dopop_atmost(BufferQueue *self, PyObject *args, PyObject *kwds)
     }
     if (out_string_size > self->tot_length)
         out_string_size = self->tot_length;
-    return (PyObject *)BufferQueue_pop(self, out_string_size);
+    return BufferQueue_pop(self, out_string_size, 0);
+}
+
+PyDoc_STRVAR(BufferQueue_doc_pop_view,
+"pop_view([length]) -> buffer\n\
+\n\
+Pop some bytes from the buffer and return it as a python 'buffer'\n\
+object. If possible, no new strings will be constructed and the\n\
+buffer returned will just be a view of one of the strings pushed\n\
+into the buffer.\n\
+");
+
+static PyObject *
+BufferQueue_dopop_view(BufferQueue *self, PyObject *args, PyObject *kwds)
+{
+    static char *kwlist[] = {"length", NULL};
+    Py_ssize_t out_string_size = self->tot_length;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds,
+            "|" ARG_PY_SSIZE_T ":pop_view", kwlist, &out_string_size))
+        return NULL;
+    if (out_string_size < 0) {
+        PyErr_SetString(PyExc_ValueError, "tried to pop a negative number of "
+            "bytes from buffer");
+        return NULL;
+    } else if (out_string_size > self->tot_length) {
+        PyErr_Format(qbuf_underflow, "buffer underflow: currently at " 
+            FMT_PY_SSIZE_T " bytes, tried to pop " FMT_PY_SSIZE_T " bytes", 
+            self->tot_length, out_string_size);
+        return NULL;
+    }
+    return BufferQueue_pop(self, out_string_size, 1);
+}
+
+PyDoc_STRVAR(BufferQueue_doc_pop_struct,
+"pop_struct(format) -> tuple\n\
+\n\
+Pop some bytes from the buffer and unpack them using the 'struct'\n\
+module, returning the resulting tuple. The format string passed is\n\
+the same as the 'struct' module format.\n\
+");
+
+static PyObject *
+BufferQueue_dopop_struct(BufferQueue *self, PyObject *args, PyObject *kwds)
+{
+    static char *kwlist[] = {"format", NULL};
+    PyObject *format, *struct_obj = NULL, *tmp = NULL, *ret = NULL;
+    Py_ssize_t fmt_length;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O:pop_struct",
+            kwlist, &format))
+        goto cleanup;
+    if (!(struct_obj = PyObject_CallFunction(_struct_obj, "O", format)))
+        goto cleanup;
+    if (!(tmp = PyObject_GetAttrString(struct_obj, "size")))
+        goto cleanup;
+    if ((fmt_length = PyNumber_AsSsize_t(tmp, PyExc_OverflowError)) == -1 
+            && PyErr_Occurred())
+        goto cleanup;
+    Py_CLEAR(tmp);
+    if (fmt_length > self->tot_length) {
+        PyErr_Format(qbuf_underflow, "buffer underflow: currently at " 
+            FMT_PY_SSIZE_T " bytes; this struct format requires "
+            FMT_PY_SSIZE_T " bytes", 
+            self->tot_length, fmt_length);
+        goto cleanup;
+    } else if (fmt_length < 0) {
+        PyErr_Format(PyExc_ValueError, 
+            "got a negative length from struct.calcsize");
+        goto cleanup;
+    }
+    if (!(tmp = BufferQueue_pop(self, fmt_length, 1)))
+        goto cleanup;
+    if (!(ret = PyObject_CallMethod(struct_obj, "unpack_from", "O", tmp)))
+        goto cleanup;
+    
+cleanup:
+    Py_XDECREF(struct_obj);
+    Py_XDECREF(tmp);
+    return ret;
 }
 
 PyDoc_STRVAR(BufferQueue_doc_popline,
@@ -564,6 +660,10 @@ static PyMethodDef BufferQueue_methods[] = {
         METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_pop},
     {"pop_atmost", (PyCFunction)BufferQueue_dopop_atmost, 
         METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_pop_atmost},
+    {"pop_view", (PyCFunction)BufferQueue_dopop_view,
+        METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_pop_view},
+    {"pop_struct", (PyCFunction)BufferQueue_dopop_struct,
+        METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_pop_struct},
     {"popline", (PyCFunction)BufferQueue_dopopline, 
         METH_VARARGS | METH_KEYWORDS, BufferQueue_doc_popline},
     {"poplines", (PyCFunction)BufferQueue_dopoplines, 
@@ -600,7 +700,7 @@ BufferQueue_iternext(BufferQueue *self)
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
     }
-    return (PyObject *)BufferQueue_pop(self, out_string_size + self->delim_size);
+    return BufferQueue_pop(self, out_string_size + self->delim_size, 0);
 }
 
 static Py_ssize_t
@@ -662,20 +762,28 @@ static PyMethodDef qbuf_methods[] = {
 PyMODINIT_FUNC
 init_qbuf(void) 
 {
-    PyObject *m;
+    PyObject *m, *_struct = NULL;
 
     if (!(m = Py_InitModule3("_qbuf", qbuf_methods,
             "C implementations of things in the qbuf package.")))
-        return;
+        goto cleanup;
     
     if (PyType_Ready(&BufferQueueType) < 0)
-        return;
+        goto cleanup;
     Py_INCREF(&BufferQueueType);
     PyModule_AddObject(m, "BufferQueue", (PyObject *)&BufferQueueType);
     
     if (!(qbuf_underflow = PyErr_NewException(
             "qbuf.BufferUnderflow", NULL, NULL)))
-        return;
+        goto cleanup;
     Py_INCREF(qbuf_underflow);
     PyModule_AddObject(m, "BufferUnderflow", qbuf_underflow);
+    
+    if (!(_struct = PyImport_ImportModule("struct")))
+        goto cleanup;
+    if (!(_struct_obj = PyObject_GetAttrString(_struct, "Struct")))
+        goto cleanup;
+    
+cleanup:
+    Py_XDECREF(_struct);
 }
