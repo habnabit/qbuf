@@ -156,6 +156,9 @@ class QbufTest(unittest.TestCase):
         buf.push('')
         self.assertEquals('', buf.pop(0))
         self.assertEquals(None, buf.delimiter)
+        buf.delimiter = 'foo'
+        buf.delimiter = ''
+        self.assertEquals(None, buf.delimiter)
 
     def test_pushpop(self):
         buf = qbuf.BufferQueue()

@@ -341,7 +341,7 @@ BufferQueue_init(BufferQueue *self, PyObject *args, PyObject *kwds)
 static PyObject *
 BufferQueue_getdelim(BufferQueue *self, void *closure)
 {
-    if (self->delim_size == 0)
+    if (!self->delim_obj)
         Py_RETURN_NONE;
     else {
         Py_INCREF(self->delim_obj);
@@ -352,20 +352,21 @@ BufferQueue_getdelim(BufferQueue *self, void *closure)
 static int
 BufferQueue_setdelim(BufferQueue *self, PyObject *value, void *closure)
 {
-    PyObject *value_string;
+    if (!PyString_Check(value) && value != Py_None) {
+        PyErr_SetString(PyExc_TypeError, "delimiter must be a string or None");
+        return -1;
+    }
     Py_XDECREF(self->delim_obj);
-    if (value == Py_None) {
+    if (value == Py_None || !PyString_GET_SIZE(value)) {
         self->delimiter = NULL;
         self->delim_obj = NULL;
         self->delim_size = 0;
         return 0;
     }
-    value_string = PyObject_Str(value);
-    if (!value_string)
-        return -1;
-    self->delimiter = PyString_AS_STRING(value_string);
-    self->delim_size = PyString_GET_SIZE(value_string);
-    self->delim_obj = value_string;
+    self->delimiter = PyString_AS_STRING(value);
+    self->delim_size = PyString_GET_SIZE(value);
+    self->delim_obj = value;
+    Py_INCREF(self->delim_obj);
     return 0;
 }
 
