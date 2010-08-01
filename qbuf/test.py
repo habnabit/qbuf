@@ -40,6 +40,8 @@ class BufferPair(object):
     
     def popline_with_delim(self, delimiter):
         line = self.test_buf.popline(delimiter)
+        if delimiter is None:
+            delimiter = self.test_buf.delimiter
         size = len(line) + len(delimiter)
         self.case.assertEquals(self.out_buf.read(size), line + delimiter)
         self.size_delta -= size
@@ -110,12 +112,12 @@ class QbufTest(unittest.TestCase):
             'foo*bar&f' # 9
             'oo*bar*foo&bar' # 14
         )
-        pair = BufferPair(self, qbuf.BufferQueue(), data)
+        pair = BufferPair(self, qbuf.BufferQueue('&'), data)
         for x in [9, 14]:
             pair.push(x)
         pair.popline_with_delim('*')
         pair.popline_with_delim('&')
-        pair.popline_with_delim('&')
+        pair.popline_with_delim(None)
         pair.pop(3)
         pair.close()
     
@@ -137,6 +139,7 @@ class QbufTest(unittest.TestCase):
         buf = qbuf.BufferQueue()
         self.assertRaises(ValueError, buf.next)
         self.assertRaises(ValueError, buf.popline)
+        self.assertRaises(ValueError, buf.popline, '')
         self.assertRaises(ValueError, buf.poplines)
         self.assertRaises(ValueError, buf.pop, -1)
         self.assertRaises(ValueError, buf.pop_atmost, -1)

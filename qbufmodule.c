@@ -6,16 +6,21 @@
 #include "structmember.h"
 
 #ifndef Py_RETURN_NONE
-#define Py_RETURN_NONE do { Py_INCREF(Py_None); return Py_None; } while (0)
+#  define Py_RETURN_NONE do { Py_INCREF(Py_None); return Py_None; } while (0)
 #endif
 
 #ifndef PyMODINIT_FUNC
-#define PyMODINIT_FUNC void
+#  define PyMODINIT_FUNC void
 #endif
 
 #if PY_VERSION_HEX < 0x02050000
-typedef int Py_ssize_t;
-typedef int (*lenfunc) (PyObject *);
+  typedef int Py_ssize_t;
+  typedef int (*lenfunc) (PyObject *);
+#  define ARG_PY_SSIZE_T "i"
+#  define FMT_PY_SSIZE_T "%i"
+#else
+#  define ARG_PY_SSIZE_T "n"
+#  define FMT_PY_SSIZE_T "%zd"
 #endif
 
 #define INITIAL_BUFFER_SIZE 8
@@ -97,21 +102,21 @@ BufferQueue_push(BufferQueue *self, PyStringObject *string)
         return 0;
     
     if (self->n_items == self->buffer_length) {
-        l_buffer = self->buffer;
-        PyMem_Resize(l_buffer, PyStringObject *, self->buffer_length * 2);
-        if (l_buffer == NULL) {
-            PyErr_SetString(PyExc_MemoryError, "failed to realloc bigger buffer");
+        l_buffer = PyMem_New(PyStringObject *, self->buffer_length * 2);
+        if (!l_buffer) {
+            PyErr_SetString(PyExc_MemoryError, "failed to alloc bigger buffer");
             return -1;
         }
         l_buffer_end = l_buffer + self->buffer_length;
         width = sizeof(self->buffer);
         if (self->start_idx == 0 && self->end_idx == 0) {
-            memcpy(l_buffer_end, l_buffer, self->buffer_length * width);
+            memcpy(l_buffer_end, self->buffer, self->buffer_length * width);
         } else {
             split = self->buffer_length - self->start_idx;
-            memcpy(l_buffer_end, l_buffer + self->start_idx, split * width);
-            memcpy(l_buffer_end + split, l_buffer, self->end_idx * width);
+            memcpy(l_buffer_end, self->buffer + self->start_idx, split * width);
+            memcpy(l_buffer_end + split, self->buffer, self->end_idx * width);
         }
+        PyMem_Free(self->buffer);
         self->buffer = l_buffer;
         self->start_idx = self->buffer_length;
         self->end_idx = 0;
@@ -147,16 +152,14 @@ BufferQueue_pop(BufferQueue *self, Py_ssize_t length)
         ret = (PyObject *)cur_string;
         BufferQueue_advance_start(self);
     } else if (self->cur_offset + length == PyString_GET_SIZE(cur_string)) {
-        ret = PyString_FromStringAndSize(
-            PyString_AS_STRING(cur_string) + self->cur_offset, length);
-        if (ret == NULL)
+        if (!(ret = PyString_FromStringAndSize(
+                PyString_AS_STRING(cur_string) + self->cur_offset, length)))
             return NULL;
         self->cur_offset = 0;
         Py_DECREF(cur_string);
         BufferQueue_advance_start(self);
     } else {
-        ret = PyString_FromStringAndSize((char *) NULL, length);
-        if (ret == NULL)
+        if (!(ret = PyString_FromStringAndSize(NULL, length)))
             return NULL;
         ret_dest = PyString_AS_STRING(ret);
         copied = 0;
@@ -230,15 +233,16 @@ BufferQueue_popline(BufferQueue *self, PyStringObject **ret,
         }
         delim_size = self->delim_size;
         delimiter = self->delimiter;
+    } else if (delim_size == 0) {
+        PyErr_SetString(PyExc_ValueError, "no delimiter");
+        return -1;
     }
     if (BufferQueue_find_delim(self, &line_size, delim_size, delimiter) == -1)
         return 0;
     
-    line = BufferQueue_pop(self, line_size);
-    if (line == NULL)
+    if (!(line = BufferQueue_pop(self, line_size)))
         return -1;
-    delim = BufferQueue_pop(self, delim_size);
-    if (delim == NULL)
+    if (!(delim = BufferQueue_pop(self, delim_size)))
         return -1;
     Py_DECREF(delim);
     *ret = line;
@@ -269,10 +273,9 @@ static PyObject *
 BufferQueue_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
     BufferQueue *self;
-
-    self = (BufferQueue *)type->tp_alloc(type, 0);
-    if (self != NULL) {
-        self->buffer = (PyStringObject **)NULL;
+    
+    if ((self = (BufferQueue *)type->tp_alloc(type, 0))) {
+        self->buffer = NULL;
         self->start_idx = self->end_idx = 0;
         self->delim_obj = NULL;
         self->delimiter = NULL;
@@ -290,15 +293,14 @@ BufferQueue_init(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"delimiter", NULL};
     PyObject *delim_tmp = Py_None;
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|O", kwlist, &delim_tmp))
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O", kwlist, &delim_tmp))
         return -1; 
     
     if (BufferQueue_setdelim(self, delim_tmp, NULL) == -1)
         return -1;
 
     self->buffer_length = INITIAL_BUFFER_SIZE;
-    self->buffer = PyMem_New(PyStringObject *, self->buffer_length);
-    if (self->buffer == NULL) {
+    if (!(self->buffer = PyMem_New(PyStringObject *, self->buffer_length))) {
         Py_XDECREF(self->delim_obj);
         PyErr_SetString(PyExc_MemoryError, "malloc of buffer failed");
         return -1;
@@ -357,12 +359,13 @@ BufferQueue_dopush(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"string", NULL};
     PyStringObject *in_string;
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "S:push", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "S:push", kwlist,
             &in_string))
         return NULL;
     if (BufferQueue_push(self, in_string) == -1)
         return NULL;
-    Py_INCREF(in_string);
+    if (PyString_GET_SIZE(in_string))
+        Py_INCREF(in_string);
     Py_RETURN_NONE;
 }
 
@@ -376,33 +379,34 @@ static PyObject *
 BufferQueue_dopush_many(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"iterable", NULL};
-    PyObject *iter, *item;
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "O:push_many", kwlist,
+    PyObject *iter = NULL, *item = NULL, *ret = NULL;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O:push_many", kwlist,
             &iter))
-        return NULL;
-    iter = PyObject_GetIter(iter);
-    if (iter == NULL)
-        return NULL;
+        goto cleanup;
+    if (!(iter = PyObject_GetIter(iter)))
+        goto cleanup;
     
-    while ((item = PyIter_Next(iter)) != NULL) {
+    while ((item = PyIter_Next(iter))) {
         if (!PyString_Check(item)) {
             PyErr_Format(PyExc_ValueError, "push_many() requires an iterable "
                 "of strings (got %.50s instead)", item->ob_type->tp_name);
-            goto error;
+            goto cleanup;
         }
         if (BufferQueue_push(self, (PyStringObject *)item) == -1)
-            goto error;
+            goto cleanup;
     }
+    item = NULL;
     
-    if (PyErr_Occurred() != NULL)
-        goto error;
+    if (PyErr_Occurred())
+        goto cleanup;
     
-    Py_DECREF(iter);
-    Py_RETURN_NONE;
+    ret = Py_None;
+    Py_INCREF(ret);
 
-error:
-    Py_DECREF(iter);
-    return NULL;
+cleanup:
+    Py_XDECREF(iter);
+    Py_XDECREF(item);
+    return ret;
 }
 
 PyDoc_STRVAR(BufferQueue_doc_pop,
@@ -418,26 +422,17 @@ BufferQueue_dopop(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"length", NULL};
     Py_ssize_t out_string_size = self->tot_length;
-#if PY_VERSION_HEX < 0x02050000
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|i:pop", kwlist,
-            &out_string_size))
-#else
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|n:pop", kwlist,
-            &out_string_size))
-#endif
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|" ARG_PY_SSIZE_T ":pop", 
+            kwlist, &out_string_size))
         return NULL;
     if (out_string_size < 0) {
         PyErr_SetString(PyExc_ValueError, "tried to pop a negative number of "
             "bytes from buffer");
         return NULL;
     } else if (out_string_size > self->tot_length) {
-#if PY_VERSION_HEX < 0x02050000
-        PyErr_Format(qbuf_underflow, "buffer underflow: currently at %i "
-            "bytes, tried to pop %i bytes", self->tot_length, out_string_size);
-#else
-        PyErr_Format(qbuf_underflow, "buffer underflow: currently at %zd "
-            "bytes, tried to pop %zd bytes", self->tot_length, out_string_size);
-#endif
+        PyErr_Format(qbuf_underflow, "buffer underflow: currently at " 
+            FMT_PY_SSIZE_T " bytes, tried to pop " FMT_PY_SSIZE_T " bytes", 
+            self->tot_length, out_string_size);
         return NULL;
     }
     return (PyObject *)BufferQueue_pop(self, out_string_size);
@@ -456,13 +451,8 @@ BufferQueue_dopop_atmost(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"length", NULL};
     Py_ssize_t out_string_size;
-#if PY_VERSION_HEX < 0x02050000
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "i:pop_atmost", kwlist,
-            &out_string_size))
-#else
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "n:pop_atmost", kwlist,
-            &out_string_size))
-#endif
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, ARG_PY_SSIZE_T ":pop_atmost",
+            kwlist, &out_string_size))
         return NULL;
     if (out_string_size < 0) {
         PyErr_SetString(PyExc_ValueError, "tried to pop a negative number of "
@@ -489,12 +479,16 @@ static PyObject *
 BufferQueue_dopopline(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"delimiter", NULL};
+    PyObject *delim_obj = Py_None;
     Py_ssize_t delim_length = -1;
     char *delimiter = NULL;
     PyStringObject *ret;
     int result;
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s#:popline", kwlist,
-            &delimiter, &delim_length))
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O:popline", kwlist,
+            &delim_obj))
+        return NULL;
+    if (delim_obj != Py_None && PyString_AsStringAndSize(
+            delim_obj, &delimiter, &delim_length) < 0)
         return NULL;
     result = BufferQueue_popline(self, &ret, delim_length, delimiter);
     if (result == -1)
@@ -522,11 +516,14 @@ BufferQueue_dopoplines(BufferQueue *self, PyObject *args, PyObject *kwds)
     static char *kwlist[] = {"delimiter", NULL};
     Py_ssize_t delim_length = -1;
     char *delimiter = NULL;
-    PyObject *ret;
+    PyObject *ret, *delim_obj = Py_None;
     PyStringObject *ret_str;
     int result;
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s#:poplines", kwlist,
-            &delimiter, &delim_length))
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O:popline", kwlist,
+            &delim_obj))
+        return NULL;
+    if (delim_obj != Py_None && PyString_AsStringAndSize(
+            delim_obj, &delimiter, &delim_length) < 0)
         return NULL;
     ret = PyList_New(0);
     if (ret == NULL)
@@ -579,13 +576,8 @@ static PyMethodDef BufferQueue_methods[] = {
 static PyObject *
 BufferQueue_repr(BufferQueue *self)
 {
-#if PY_VERSION_HEX < 0x02050000
-    return PyString_FromFormat("<BufferQueue of %i bytes at %p>",
-        self->tot_length, self);
-#else
-    return PyString_FromFormat("<BufferQueue of %zd bytes at %p>",
-        self->tot_length, self);
-#endif
+    return PyString_FromFormat("<BufferQueue of " FMT_PY_SSIZE_T " bytes "
+        "at %p>", self->tot_length, self);
 }
 
 static PyObject *
@@ -670,21 +662,20 @@ static PyMethodDef qbuf_methods[] = {
 PyMODINIT_FUNC
 init_qbuf(void) 
 {
-    PyObject* m;
+    PyObject *m;
+
+    if (!(m = Py_InitModule3("_qbuf", qbuf_methods,
+            "C implementations of things in the qbuf package.")))
+        return;
     
     if (PyType_Ready(&BufferQueueType) < 0)
         return;
-
-    m = Py_InitModule3("_qbuf", qbuf_methods,
-        "C implementations of things in the qbuf package.");
-
     Py_INCREF(&BufferQueueType);
     PyModule_AddObject(m, "BufferQueue", (PyObject *)&BufferQueueType);
     
-    qbuf_underflow = PyErr_NewException("qbuf.BufferUnderflow", NULL, NULL);
-    if (qbuf_underflow == NULL)
+    if (!(qbuf_underflow = PyErr_NewException(
+            "qbuf.BufferUnderflow", NULL, NULL)))
         return;
     Py_INCREF(qbuf_underflow);
     PyModule_AddObject(m, "BufferUnderflow", qbuf_underflow);
-    
 }
