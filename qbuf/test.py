@@ -13,32 +13,32 @@ class BufferPair(object):
             buf = qbuf.BufferQueue()
         self.test_buf = buf
         if data is None:
-            data = ''.join([chr(random.randrange(256)) 
+            data = ''.join([chr(random.randrange(256))
                 for _ in xrange(data_length)])
         self.in_buf = StringIO.StringIO(data)
         self.out_buf = StringIO.StringIO(data)
         self.size_delta = 0
-    
+
     def push(self, size):
         data = self.in_buf.read(size)
         self.case.assertEquals(len(data), size)
         self.test_buf.push(data)
         self.size_delta += size
-    
+
     def pop(self, size=None):
         if size is None:
             size = self.size_delta
         self.case.assertEquals(
             self.out_buf.read(size), self.test_buf.pop(size))
         self.size_delta -= size
-    
+
     def popline(self):
         line = self.test_buf.popline()
         size = len(line) + len(self.test_buf.delimiter)
         self.case.assertEquals(
             self.out_buf.read(size), line + self.test_buf.delimiter)
         self.size_delta -= size
-    
+
     def popline_with_delim(self, delimiter):
         line = self.test_buf.popline(delimiter)
         if delimiter is None:
@@ -46,18 +46,18 @@ class BufferPair(object):
         size = len(line) + len(delimiter)
         self.case.assertEquals(self.out_buf.read(size), line + delimiter)
         self.size_delta -= size
-    
+
     def clear(self):
         self.test_buf.clear()
         self.out_buf.seek(self.size_delta, 1)
         self.size_delta = 0
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, *exc_info):
         self.close()
-    
+
     def close(self):
         self.case.assertEquals(len(self.test_buf), 0)
 
@@ -68,7 +68,7 @@ class QbufTest(unittest.TestCase):
             pair.push(x + 1)
         pair.pop()
         pair.close()
-    
+
     def test_circularity(self):
         pair = BufferPair(self)
         pair.push(24)
@@ -77,7 +77,7 @@ class QbufTest(unittest.TestCase):
             pair.pop(24)
         pair.pop(24)
         pair.close()
-    
+
     def test_growth_and_circularity(self):
         pair = BufferPair(self)
         pair.push(23)
@@ -86,7 +86,7 @@ class QbufTest(unittest.TestCase):
             pair.pop(6)
         pair.pop(23*129 - 6*128)
         pair.close()
-    
+
     def test_delimiter_search(self):
         data = (
             'extra ' # 6
@@ -107,7 +107,7 @@ class QbufTest(unittest.TestCase):
             pair.popline()
         pair.pop(2)
         pair.close()
-    
+
     def test_passed_delimiter(self):
         data = (
             'foo*bar&f' # 9
@@ -121,7 +121,7 @@ class QbufTest(unittest.TestCase):
         pair.popline_with_delim(None)
         pair.pop(3)
         pair.close()
-    
+
     def test_repr(self):
         buf = qbuf.BufferQueue()
         self.assertEquals(
@@ -129,13 +129,13 @@ class QbufTest(unittest.TestCase):
         buf.push('foobar')
         self.assertEquals(
             '<BufferQueue of 6 bytes at %#x>' % id(buf), repr(buf))
-    
+
     def test_iter(self):
         buf = qbuf.BufferQueue('\n')
         buf.push('foo\nbar\nbaz')
         self.assertEquals(['foo\n', 'bar\n'], list(buf))
         self.assertEquals('baz', buf.pop())
-    
+
     def test_exceptions(self):
         buf = qbuf.BufferQueue()
         self.assertRaises(ValueError, buf.next)
@@ -150,13 +150,13 @@ class QbufTest(unittest.TestCase):
         self.assertRaises(ValueError, buf.push_many, [None])
         buf.delimiter = '***'
         self.assertRaises(ValueError, buf.popline)
-    
+
     def test_corners(self):
         buf = qbuf.BufferQueue()
         buf.push('')
         self.assertEquals('', buf.pop(0))
         self.assertEquals(None, buf.delimiter)
-    
+
     def test_pushpop(self):
         buf = qbuf.BufferQueue()
         buf.push_many(['foo', 'bar', 'baz'])
@@ -165,7 +165,7 @@ class QbufTest(unittest.TestCase):
         buf.push('foo\nbar\nbaz')
         self.assertEquals(['foo', 'bar'], buf.poplines())
         self.assertEquals('baz', buf.pop())
-    
+
     def test_clear(self):
         pair = BufferPair(self)
         for x in xrange(24):
@@ -178,7 +178,7 @@ class QbufTest(unittest.TestCase):
         pair.clear()
         self.assertRaises(qbuf.BufferUnderflow, pair.test_buf.pop, 1)
         pair.close()
-    
+
     def test_pop_view(self):
         buf = qbuf.BufferQueue()
         buf.push_many(['foo', 'bar'])
@@ -194,7 +194,7 @@ class QbufTest(unittest.TestCase):
         b = buf.pop_view()
         self.assert_(isinstance(b, buffer))
         self.assertEquals('foobarbaz', b[:])
-    
+
     def test_pop_struct(self):
         buf = qbuf.BufferQueue()
         buf.push('\x01\x02\x03\x04\x05\x06')
