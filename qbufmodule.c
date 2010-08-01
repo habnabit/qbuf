@@ -59,8 +59,6 @@ typedef struct {
     Py_ssize_t n_items;
     Py_ssize_t tot_length;
     Py_ssize_t cur_offset;
-    char *delimiter;
-    Py_ssize_t delim_size;
     PyObject *delim_obj;
 } BufferQueue;
 
@@ -91,17 +89,23 @@ BufferQueueIterator_init(BufferQueueIterator *self, BufferQueue *parent)
 }
 
 static int
-BufferQueueIterator_advance(BufferQueueIterator *self)
+BufferQueueIterator_advance_string(BufferQueueIterator *self)
 {
-    if (++self->char_idx == self->s_size) {
-        self->char_idx = 0;
-        if (++self->string_idx == self->parent->buffer_length)
-            self->string_idx = 0;
-        if (self->string_idx == self->parent->end_idx)
-            return 1;
-        else
-            BufferQueueIterator_update(self);
-    }
+    self->char_idx = 0;
+    if (++self->string_idx == self->parent->buffer_length)
+        self->string_idx = 0;
+    if (self->string_idx == self->parent->end_idx)
+        return 1;
+    else
+        BufferQueueIterator_update(self);
+    return 0;
+}
+
+static int
+BufferQueueIterator_advance_char(BufferQueueIterator *self)
+{
+    if (++self->char_idx == self->s_size)
+        return BufferQueueIterator_advance_string(self);
     return 0;
 }
 
@@ -217,61 +221,67 @@ cleanup:
 }
 
 static int
-BufferQueue_find_delim(BufferQueue *self, Py_ssize_t *loc,
-        Py_ssize_t delim_size, char *delimiter)
+BufferQueue_find_delim(BufferQueue *self, PyStringObject *delim_obj)
 {
     BufferQueueIterator iter, split_iter;
-    Py_ssize_t pos, delim_pos, target;
+    Py_ssize_t pos = 0, i, offset, delim_pos;
+    PyObject *tmp = NULL;
+    char *delimiter = PyString_AS_STRING(delim_obj);
+    Py_ssize_t delim_size = PyString_GET_SIZE(delim_obj);
     if (delim_size > self->tot_length)
         return -1;
 
     BufferQueueIterator_init(&iter, self);
-    target = self->tot_length - delim_size;
-    for (pos = 0; pos <= target; ++pos) {
-        if (iter.char_idx + delim_size > iter.s_size) {
+    do {
+        if (!(tmp = PyObject_CallMethod((PyObject *)iter.cur_string, "find",
+                "O" ARG_PY_SSIZE_T, delim_obj, iter.char_idx)))
+            goto cleanup;
+        if ((delim_pos = PyNumber_AsSsize_t(tmp, PyExc_OverflowError)) == -1
+                && PyErr_Occurred())
+            goto cleanup;
+        Py_CLEAR(tmp);
+        if (delim_pos != -1)
+            return pos + delim_pos - iter.char_idx;
+
+        pos += iter.s_size - iter.char_idx;
+        for (offset = 1; offset < delim_size; ++offset) {
+            if (pos + offset > self->tot_length)
+                break;
             split_iter = iter;
-            for (delim_pos = 0; delim_pos < delim_size; ++delim_pos) {
-                if (delimiter[delim_pos] != split_iter.s_ptr[split_iter.char_idx])
-                    goto next_iter;
-                BufferQueueIterator_advance(&split_iter);
+            split_iter.char_idx = split_iter.s_size - delim_size + offset;
+            for (i = 0; i < delim_size; ++i) {
+                if (delimiter[i] != split_iter.s_ptr[split_iter.char_idx])
+                    break;
+                BufferQueueIterator_advance_char(&split_iter);
             }
-            *loc = pos;
-            return 0;
-        } else {
-            if (memcmp(iter.s_ptr + iter.char_idx, delimiter, delim_size) == 0) {
-                *loc = pos;
-                return 0;
-            }
+            if (i == delim_size)
+                return pos - delim_size + offset;
         }
-        next_iter:
-        BufferQueueIterator_advance(&iter);
-    }
+    } while(!BufferQueueIterator_advance_string(&iter));
+
+cleanup:
+    Py_XDECREF(tmp);
     return -1;
 }
 
 static int
 BufferQueue_popline(BufferQueue *self, PyStringObject **ret,
-        Py_ssize_t delim_size, char *delimiter)
+        PyStringObject *delim_obj)
 {
-    Py_ssize_t line_size;
     PyObject *line, *delim;
-    if (delim_size == -1) {
-        if (self->delim_size == 0) {
-            PyErr_SetString(PyExc_ValueError, "no delimiter");
-            return -1;
-        }
-        delim_size = self->delim_size;
-        delimiter = self->delimiter;
-    } else if (delim_size == 0) {
+    Py_ssize_t line_size;
+    if (!delim_obj)
+        delim_obj = (PyStringObject *)self->delim_obj;
+    if (!delim_obj || !PyString_GET_SIZE(delim_obj)) {
         PyErr_SetString(PyExc_ValueError, "no delimiter");
         return -1;
     }
-    if (BufferQueue_find_delim(self, &line_size, delim_size, delimiter) == -1)
+    if ((line_size = BufferQueue_find_delim(self, delim_obj)) == -1)
         return 0;
 
     if (!(line = BufferQueue_pop(self, line_size, 0)))
         return -1;
-    if (!(delim = BufferQueue_pop(self, delim_size, 0)))
+    if (!(delim = BufferQueue_pop(self, PyString_GET_SIZE(delim_obj), 0)))
         return -1;
     Py_DECREF(delim);
     *ret = (PyStringObject *)line;
@@ -307,8 +317,6 @@ BufferQueue_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         self->buffer = NULL;
         self->start_idx = self->end_idx = 0;
         self->delim_obj = NULL;
-        self->delimiter = NULL;
-        self->delim_size = 0;
         self->n_items = self->tot_length = self->cur_offset = 0;
     }
 
@@ -358,13 +366,9 @@ BufferQueue_setdelim(BufferQueue *self, PyObject *value, void *closure)
     }
     Py_XDECREF(self->delim_obj);
     if (value == Py_None || !PyString_GET_SIZE(value)) {
-        self->delimiter = NULL;
         self->delim_obj = NULL;
-        self->delim_size = 0;
         return 0;
     }
-    self->delimiter = PyString_AS_STRING(value);
-    self->delim_size = PyString_GET_SIZE(value);
     self->delim_obj = value;
     Py_INCREF(self->delim_obj);
     return 0;
@@ -587,17 +591,15 @@ BufferQueue_dopopline(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"delimiter", NULL};
     PyObject *delim_obj = Py_None;
-    Py_ssize_t delim_length = -1;
-    char *delimiter = NULL;
     PyStringObject *ret;
     int result;
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O:popline", kwlist,
             &delim_obj))
         return NULL;
-    if (delim_obj != Py_None && PyString_AsStringAndSize(
-            delim_obj, &delimiter, &delim_length) < 0)
+    if (delim_obj != Py_None && !PyString_Check(delim_obj))
         return NULL;
-    result = BufferQueue_popline(self, &ret, delim_length, delimiter);
+    result = BufferQueue_popline(self, &ret,
+        (delim_obj == Py_None)? NULL : (PyStringObject *)delim_obj);
     if (result == -1)
         return NULL;
     else if (result == 0) {
@@ -621,22 +623,21 @@ static PyObject *
 BufferQueue_dopoplines(BufferQueue *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"delimiter", NULL};
-    Py_ssize_t delim_length = -1;
-    char *delimiter = NULL;
     PyObject *ret, *delim_obj = Py_None;
     PyStringObject *ret_str;
     int result;
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O:popline", kwlist,
             &delim_obj))
         return NULL;
-    if (delim_obj != Py_None && PyString_AsStringAndSize(
-            delim_obj, &delimiter, &delim_length) < 0)
+    if (delim_obj != Py_None && !PyString_Check(delim_obj))
         return NULL;
     ret = PyList_New(0);
     if (ret == NULL)
         return NULL;
+    if (delim_obj == Py_None)
+        delim_obj = NULL;
     while ((result = BufferQueue_popline(
-            self, &ret_str, delim_length, delimiter)) == 1) {
+            self, &ret_str, (PyStringObject *)delim_obj)) == 1) {
         PyList_Append(ret, (PyObject *)ret_str);
         Py_DECREF(ret_str);
     }
@@ -702,16 +703,18 @@ static PyObject *
 BufferQueue_iternext(BufferQueue *self)
 {
     Py_ssize_t out_string_size;
-    if (self->delim_size == 0) {
+    if (!self->delim_obj) {
         PyErr_SetString(PyExc_ValueError, "no delimiter");
         return NULL;
     }
-    if (BufferQueue_find_delim(self, &out_string_size,
-            self->delim_size, self->delimiter) == -1) {
+
+    if ((out_string_size = BufferQueue_find_delim(self,
+            (PyStringObject *)self->delim_obj)) == -1) {
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
     }
-    return BufferQueue_pop(self, out_string_size + self->delim_size, 0);
+    return BufferQueue_pop(self, 
+        out_string_size + PyString_GET_SIZE(self->delim_obj), 0);
 }
 
 static Py_ssize_t
