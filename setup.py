@@ -1,11 +1,21 @@
-from distutils.core import setup, Extension
+import sys
+
+from setuptools import setup, Extension
+
+
+ext_modules = []
+if sys.version_info < (3,):
+    ext_modules.append(Extension('qbuf._qbuf', ['qbufmodule.c']))
+
+
 setup(
-    name='qbuf', 
+    name='qbuf',
     version='0.9.4',
     packages=['qbuf', 'qbuf.support'],
-    ext_modules=[
-        Extension('qbuf._qbuf', ['qbufmodule.c'])],
-    
+    ext_modules=ext_modules,
+
+    install_requires=['six'],
+
     author='Aaron Gallagher',
     author_email='habnabit@gmail.com',
     url='http://www.habnabit.org/qbuf',
