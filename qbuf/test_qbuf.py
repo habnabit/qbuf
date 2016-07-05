@@ -152,9 +152,9 @@ def test_passed_delimiter(pair_factory):
 
 def test_repr(buf_factory):
     buf = buf_factory()
-    assert '<BufferQueue of 0 bytes at %#x>' % id(buf) == repr(buf)
+    assert '<BufferQueue of 0 bytes>' == repr(buf)
     buf.push('foobar')
-    assert '<BufferQueue of 6 bytes at %#x>' % id(buf) == repr(buf)
+    assert '<BufferQueue of 6 bytes>' == repr(buf)
 
 
 def test_iter(buf_factory):

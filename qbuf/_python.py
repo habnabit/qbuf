@@ -16,8 +16,7 @@ class PythonBufferQueue(object):
         self._tot_length = 0
 
     def __repr__(self):
-        return '<BufferQueue of %s bytes at %#x>' % (
-            self._tot_length, id(self))
+        return '<BufferQueue of %s bytes>' % (self._tot_length,)
 
     def __len__(self):
         return self._tot_length

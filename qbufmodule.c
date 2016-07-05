@@ -688,8 +688,8 @@ static PyMethodDef BufferQueue_methods[] = {
 static PyObject *
 BufferQueue_repr(BufferQueue *self)
 {
-    return PyString_FromFormat("<BufferQueue of " FMT_PY_SSIZE_T " bytes "
-        "at %p>", self->tot_length, self);
+    return PyString_FromFormat(
+        "<BufferQueue of " FMT_PY_SSIZE_T " bytes>", self->tot_length);
 }
 
 static PyObject *
