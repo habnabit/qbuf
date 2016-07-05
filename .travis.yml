@@ -1,0 +1,25 @@
+sudo: false
+language: python
+
+matrix:
+  include:
+
+    - python: 2.7
+      env: TOXENV=py27-test
+
+    - python: 3.5
+      env: TOXENV=py35-test
+
+    - python: pypy
+      env: TOXENV=pypy-test
+
+    - python: pypy3
+      env: TOXENV=pypy3-test
+
+
+install:
+  - "pip install tox codecov"
+script:
+  - "tox"
+after_success:
+  - "codecov"
