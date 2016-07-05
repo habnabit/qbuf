@@ -350,7 +350,7 @@ static PyObject *
 BufferQueue_getdelim(BufferQueue *self, void *closure)
 {
     if (!self->delim_obj)
-        Py_RETURN_NONE;
+        return PyString_FromString("");
     else {
         Py_INCREF(self->delim_obj);
         return self->delim_obj;
@@ -422,7 +422,7 @@ BufferQueue_dopush_many(BufferQueue *self, PyObject *args, PyObject *kwds)
 
     while ((item = PyIter_Next(iter))) {
         if (!PyString_Check(item)) {
-            PyErr_Format(PyExc_ValueError, "push_many() requires an iterable "
+            PyErr_Format(PyExc_TypeError, "push_many() requires an iterable "
                 "of strings (got %.50s instead)", item->ob_type->tp_name);
             goto cleanup;
         }
@@ -713,7 +713,7 @@ BufferQueue_iternext(BufferQueue *self)
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
     }
-    return BufferQueue_pop(self, 
+    return BufferQueue_pop(self,
         out_string_size + PyString_GET_SIZE(self->delim_obj), 0);
 }
 

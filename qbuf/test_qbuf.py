@@ -12,9 +12,6 @@ import six
 import qbuf
 
 
-incomplete = pytest.mark.incomplete
-
-
 class BufferPair(object):
     def __init__(self, rng, buf, data=None, data_length=10240):
         self.test_buf = buf
@@ -69,8 +66,6 @@ class BufferPair(object):
 @pytest.fixture(params=('python', 'c'))
 def buf_factory(request):
     if request.param == 'python':
-        if getattr(request.function, 'incomplete', False):
-            pytest.xfail('incomplete python implementation')
         return qbuf.PythonBufferQueue
     elif request.param == 'c':
         if six.PY3:
@@ -155,7 +150,6 @@ def test_passed_delimiter(pair_factory):
     pair.close()
 
 
-@incomplete
 def test_repr(buf_factory):
     buf = buf_factory()
     assert '<BufferQueue of 0 bytes at %#x>' % id(buf) == repr(buf)
@@ -170,7 +164,6 @@ def test_iter(buf_factory):
     assert b'baz' == buf.pop()
 
 
-@incomplete
 def test_exceptions(buf_factory):
     buf = buf_factory()
     pytest.raises(ValueError, buf.next)
@@ -182,20 +175,19 @@ def test_exceptions(buf_factory):
     pytest.raises(qbuf.BufferUnderflow, buf.pop, 1)
     pytest.raises(TypeError, buf.push, None)
     pytest.raises(TypeError, buf.push_many, None)
-    pytest.raises(ValueError, buf.push_many, [None])
+    pytest.raises(TypeError, buf.push_many, [None])
     buf.delimiter = '***'
     pytest.raises(ValueError, buf.popline)
 
 
-@incomplete
 def test_corners(buf_factory):
     buf = buf_factory()
     buf.push(b'')
-    assert '' == buf.pop(0)
-    assert None is buf.delimiter
+    assert buf.pop(0) == b''
+    assert buf.delimiter == b''
     buf.delimiter = b'foo'
     buf.delimiter = b''
-    assert None is buf.delimiter
+    assert buf.delimiter == b''
 
 
 def test_pushpop(buf_factory):

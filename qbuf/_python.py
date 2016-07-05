@@ -9,11 +9,15 @@ except ImportError:
 
 
 class PythonBufferQueue(object):
-    def __init__(self, delimiter=None):
+    def __init__(self, delimiter=b''):
         self.delimiter = delimiter
         self._buffer = collections.deque()
         self._offset = 0
         self._tot_length = 0
+
+    def __repr__(self):
+        return '<BufferQueue of %s bytes at %#x>' % (
+            self._tot_length, id(self))
 
     def __len__(self):
         return self._tot_length
@@ -131,7 +135,7 @@ class PythonBufferQueue(object):
 
         raise exc()
 
-    def popline(self, delimiter=None, keepends=False, _exc=BufferUnderflow):
+    def popline(self, delimiter=None, keepends=False, _exc=ValueError):
         to_delim, delim_len = self._find_delimiter(delimiter, _exc)
         if keepends:
             return self.pop(to_delim + delim_len)
@@ -144,7 +148,7 @@ class PythonBufferQueue(object):
         ret = []
         while True:
             try:
-                ret.append(self.popline(delimiter))
+                ret.append(self.popline(delimiter, _exc=BufferUnderflow))
             except BufferUnderflow:
                 break
         return ret
